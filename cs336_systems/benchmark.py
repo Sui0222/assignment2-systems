@@ -12,7 +12,7 @@ from cs336_basics.nn_utils import cross_entropy
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_size", choices=CONFIGS.keys(), default="small")
 parser.add_argument("--mode", choices=["fwd", "fwd_bwd", "full"], default="full")
-parser.add_argument("--batch_size", type=int, default=4)
+parser.add_argument("--batch_size", type=int, default=2)
 parser.add_argument("--warmup_steps", type=int, default=5)
 parser.add_argument("--measure_steps", type=int, default=10)
 args = parser.parse_args()
@@ -48,12 +48,18 @@ def run_step():
     optimizer.zero_grad()
     logits = model(inputs)
     if args.mode == "fwd":
+        with torch.no_grad():
+            logits = model(inputs)
         return
+    # 在 PyTorch 的 .view() 語法中，-1 代表「自動推導維度（Inferred Dimension）」。
     loss = cross_entropy(logits.view(-1, config.vocab_size), targets.view(-1))
     loss.backward()
     if args.mode == "fwd_bwd":
         return
     optimizer.step()
+
+    # 關鍵：清理局部張量引用
+    del logits, loss
 
 # 5. GPU 預熱階段 (Warm-up)
 for _ in range(args.warmup_steps):
@@ -72,6 +78,9 @@ for _ in range(args.measure_steps):
     torch.cuda.synchronize()
     end = timeit.default_timer()
     timings.append((end - start) * 1000) # 轉成 ms
+
+# 測試完成後手動清空快取
+torch.cuda.empty_cache()
 
 # 7. 數據統計與輸出 (方便回答 Deliverable b)
 mean_time = np.mean(timings)
