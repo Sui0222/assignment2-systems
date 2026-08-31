@@ -398,6 +398,7 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         return self.w2(silu(self.w1(x)) * self.w3(x))
 
+from torch.cuda import nvtx
 
 def scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
@@ -424,14 +425,24 @@ def scaled_dot_product_attention(
     """
 
     d_k = K.shape[-1]
+    nvtx.range_push("compute_attention_scores")
     attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+    nvtx.range_pop()
 
     if mask is not None:
+        nvtx.range_push("apply_causal_mask")
         attention_scores = torch.where(mask, attention_scores, float("-inf"))
+        nvtx.range_pop()
 
+    nvtx.range_push("softmax")
     attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+    nvtx.range_pop()
 
-    return einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    nvtx.range_push("attention_output")
+    output = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    nvtx.range_pop()
+
+    return output
 
 
 class CausalMultiHeadSelfAttention(nn.Module):
@@ -491,9 +502,11 @@ class CausalMultiHeadSelfAttention(nn.Module):
         *batch_dims, sequence_length, d_model = x.size()
         assert d_model == self.d_model
 
+        nvtx.range_push("qkv_projection")
         Q = self.q_proj(x)
         K = self.k_proj(x)
         V = self.v_proj(x)
+        nvtx.range_pop()
 
         # Take apart each head from the embedding dimension of Q, K, V to shape (..., num_heads, seq_len, d_k).
         Q, K, V = (
@@ -506,8 +519,10 @@ class CausalMultiHeadSelfAttention(nn.Module):
                 # Duplicate token positions for each head
                 token_positions = rearrange(token_positions, "... seq -> ... 1 seq")
 
+            nvtx.range_push("rope")
             Q = self.positional_encoder(Q, token_positions)
             K = self.positional_encoder(K, token_positions)
+            nvtx.range_pop()
 
         # Construct causal mask
         iota = torch.arange(sequence_length, device=x.device)
@@ -521,10 +536,14 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
         # Concatenate the attention output from all heads.
         # (..., sequence_length, num_heads * d_v).
+        nvtx.range_push("scaled_dot_product_attention")
         attn_output = rearrange(attn_output, "batch heads seq d_v -> batch seq (heads d_v)").contiguous()
+        nvtx.range_pop()
 
         # Apply the output projection
+        nvtx.range_push("output_projection")
         output = self.output_proj(attn_output)
+        nvtx.range_pop()
         return output
 
 
