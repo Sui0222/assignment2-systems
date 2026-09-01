@@ -7,7 +7,7 @@ class ModelConfig:
     d_ff: int
     num_layers: int
     num_heads: int
-    vocab_size: int = 500
+    vocab_size: int = 50257
     context_length: int = 512
 
 # 2. 定義 CS336/GPT 系列標準模型規格 mapping

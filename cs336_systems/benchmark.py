@@ -1,126 +1,123 @@
 import argparse
 import gc
 import timeit
+from collections.abc import Callable
+
 import numpy as np
 import torch
 
-from config import CONFIGS
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.nn_utils import cross_entropy
 from cs336_basics.optimizer import AdamW
+from cs336_systems.config import CONFIGS
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--model_size", choices=CONFIGS.keys(), default="small")
-parser.add_argument("--mode", choices=["fwd", "fwd_bwd", "full"], default="full")
-parser.add_argument("--batch_size", type=int, default=2)
-parser.add_argument("--warmup_steps", type=int, default=5)
-parser.add_argument("--measure_steps", type=int, default=10)
-parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler")
-parser.add_argument(
-    "--memory_profile",
-    action="store_true",
-    help="Record a CUDA memory history snapshot (for pytorch.org/memory_viz)",
-)
-parser.add_argument(
-    "--dtype",
-    choices=["fp32", "fp16", "bf16"],
-    default="fp32",
-    help="Autocast dtype for the forward pass (backward follows automatically).",
-)
-args = parser.parse_args()
 
-DTYPE_MAP = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-autocast_enabled = args.dtype != "fp32"
-autocast_dtype = DTYPE_MAP[args.dtype]
+DTYPE_MAP = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
 
-config = CONFIGS[args.model_size]
 
-model = (
-    BasicsTransformerLM(
-        d_model=config.d_model,
-        d_ff=config.d_ff,
-        num_layers=config.num_layers,
-        num_heads=config.num_heads,
-        vocab_size=config.vocab_size,
-        context_length=config.context_length,
-    )
-    .cuda()
-    .train()
-)
-
-optimizer = AdamW(model.parameters(), lr=1e-3)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_size", choices=CONFIGS.keys(), default="small")
+    parser.add_argument("--mode", choices=["fwd", "fwd_bwd", "full"], default="full")
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--context_length", type=int, default=None)
+    parser.add_argument("--warmup_steps", type=int, default=5)
+    parser.add_argument("--measure_steps", type=int, default=10)
+    parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--memory_profile", action="store_true")
+    parser.add_argument("--dtype", choices=DTYPE_MAP.keys(), default="fp32")
+    return parser.parse_args()
 
 
 def get_dummy_batch(
-    batch_size: int, seq_len: int, vocab_size: int, device: str = "cuda"
-):
-    x = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
-    y = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
-    return x, y
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    inputs = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+    targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+    return inputs, targets
 
 
-inputs, targets = get_dummy_batch(
-    batch_size=args.batch_size,
-    seq_len=config.context_length,
-    vocab_size=config.vocab_size,
-)
+def make_step(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    mode: str,
+    vocab_size: int,
+    autocast_dtype: torch.dtype,
+) -> Callable[[], None]:
+    autocast_enabled = autocast_dtype != torch.float32
 
-
-def run_step():
-    optimizer.zero_grad(set_to_none=True)
-
-    # autocast only wraps the forward pass (+ loss). Backward automatically
-    # reuses whatever dtype each op ran forward in -- you should NOT wrap
-    # loss.backward() in autocast yourself.
-    with torch.autocast(
-        device_type="cuda", dtype=autocast_dtype, enabled=autocast_enabled
-    ):
-        if args.mode == "fwd":
+    def run_step() -> None:
+        if mode == "fwd":
             with torch.no_grad():
-                logits = model(inputs)
-            del logits
+                with torch.autocast(
+                    device_type="cuda",
+                    dtype=autocast_dtype,
+                    enabled=autocast_enabled,
+                ):
+                    model(inputs)
             return
 
-        logits = model(inputs)
-        loss = cross_entropy(logits.view(-1, config.vocab_size), targets.view(-1))
+        optimizer.zero_grad(set_to_none=True)
 
-    if args.mode == "fwd_bwd":
+        # Autocast selects the forward operators' dtypes. Backward must run
+        # outside this context and reuses the dtypes chosen during forward.
+        with torch.autocast(
+            device_type="cuda",
+            dtype=autocast_dtype,
+            enabled=autocast_enabled,
+        ):
+            logits = model(inputs)
+            loss = cross_entropy(
+                logits.reshape(-1, vocab_size),
+                targets.reshape(-1),
+            )
+
         loss.backward()
-        del logits, loss
-        return
+        if mode == "full":
+            optimizer.step()
 
-    loss.backward()
-    optimizer.step()
-    del logits, loss
+    return run_step
 
 
-# Warm-up
-for _ in range(args.warmup_steps):
-    run_step()
+def prepare_measurement() -> None:
+    """Remove warm-up garbage and start fresh peak-memory accounting."""
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
 
-gc.collect()
-torch.cuda.empty_cache()
-torch.cuda.synchronize()
 
-# 三選一：memory snapshot > torch.profiler > 純計時
-if args.memory_profile:
-    # 只記錄 measure 階段，不含 warmup（warmup 有 CUDA context 初始化 /
-    # cuDNN autotune 等雜訊，不是我們想分析的東西）
-    torch.cuda.memory._record_memory_history(max_entries=1000000)
-
-    # 一兩步就夠了，太多步只是浪費 CPU 記憶體記錄歷史，不會有新資訊
-    for _ in range(2):
-        run_step()
-
-    snapshot_path = f"memory_snapshot_{args.model_size}_{args.dtype}.pickle"
-    torch.cuda.memory._dump_snapshot(snapshot_path)
-    torch.cuda.memory._record_memory_history(enabled=None)
+def run_memory_profile(
+    run_step: Callable[[], None],
+    snapshot_path: str,
+) -> None:
+    torch.cuda.memory._record_memory_history(max_entries=1_000_000)
+    try:
+        for _ in range(2):
+            run_step()
+        torch.cuda.synchronize()
+        torch.cuda.memory._dump_snapshot(snapshot_path)
+    finally:
+        # Always stop recording, including when a step or snapshot fails.
+        torch.cuda.memory._record_memory_history(enabled=None)
 
     print(f"\n[SUCCESS] Memory snapshot saved to {snapshot_path}")
     print("Load it at https://pytorch.org/memory_viz to visualize.")
 
-# 如果開啟 --profile 參數，則執行 Profiling
-elif args.profile:
+
+def run_torch_profile(
+    run_step: Callable[[], None],
+    trace_path: str,
+) -> None:
     with torch.profiler.profile(
         activities=[
             torch.profiler.ProfilerActivity.CPU,
@@ -130,41 +127,98 @@ elif args.profile:
         profile_memory=True,
         with_stack=False,
     ) as prof:
-        # 只捕捉 1~2 步即可，避免檔名與記憶體過大
         for _ in range(2):
             run_step()
 
-    # 1. 印出 Console 摘要表（Top 15 最耗時 CUDA Kernel）
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+    print(prof.key_averages().table(sort_by="device_time_total", row_limit=15))
+    prof.export_chrome_trace(trace_path)
+    print(f"\n[SUCCESS] Trace saved to {trace_path}")
 
-    # 2. 匯出 Trace 圖表檔案
-    prof.export_chrome_trace("trace.json")
-    print("\n[SUCCESS] Trace successfully saved to trace.json")
 
-else:
-    # 標準 Benchmark 計時
-    timings = []
-    for _ in range(args.measure_steps):
+def run_benchmark(
+    run_step: Callable[[], None],
+    measure_steps: int,
+) -> tuple[float, float, float]:
+    timings_ms = []
+    for _ in range(measure_steps):
         torch.cuda.synchronize()
         start = timeit.default_timer()
-
         run_step()
-
         torch.cuda.synchronize()
-        end = timeit.default_timer()
-        timings.append((end - start) * 1000)
+        timings_ms.append((timeit.default_timer() - start) * 1_000)
 
-    mean_time = np.mean(timings)
-    std_time = np.std(timings)
-    peak_mem_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
-    print(
-        f"[{args.model_size} | Mode: {args.mode} | dtype: {args.dtype}] "
-        f"Mean: {mean_time:.2f} ms | Std: {std_time:.2f} ms | "
-        f"Peak mem: {peak_mem_gb:.2f} GB"
-    )
+    mean_ms = float(np.mean(timings_ms))
+    std_ms = float(np.std(timings_ms))
+    peak_memory_gib = torch.cuda.max_memory_allocated() / 1024**3
+    return mean_ms, std_ms, peak_memory_gib
 
-# 清理，避免同一個 process 內連續跑多個 model_size 時顯存殘留 / fragmentation
-del model, optimizer, inputs, targets
-gc.collect()
-torch.cuda.empty_cache()
-torch.cuda.synchronize()
+
+def main() -> None:
+    args = parse_args()
+    if not torch.cuda.is_available():
+        raise RuntimeError("This benchmark requires a CUDA-capable GPU.")
+
+    device = torch.device("cuda")
+    config = CONFIGS[args.model_size]
+    context_length = args.context_length or config.context_length
+
+    model = None
+    optimizer = None
+    inputs = None
+    targets = None
+    try:
+        model = BasicsTransformerLM(
+            d_model=config.d_model,
+            d_ff=config.d_ff,
+            num_layers=config.num_layers,
+            num_heads=config.num_heads,
+            vocab_size=config.vocab_size,
+            context_length=context_length,
+        ).to(device)
+        model.train()
+        optimizer = AdamW(model.parameters(), lr=1e-3)
+        inputs, targets = get_dummy_batch(
+            batch_size=args.batch_size,
+            seq_len=context_length,
+            vocab_size=config.vocab_size,
+            device=device,
+        )
+        run_step = make_step(
+            model=model,
+            optimizer=optimizer,
+            inputs=inputs,
+            targets=targets,
+            mode=args.mode,
+            vocab_size=config.vocab_size,
+            autocast_dtype=DTYPE_MAP[args.dtype],
+        )
+
+        for _ in range(args.warmup_steps):
+            run_step()
+        prepare_measurement()
+
+        run_name = f"{args.model_size}_{args.mode}_{args.dtype}_ctx{context_length}"
+        if args.memory_profile:
+            run_memory_profile(
+                run_step,
+                f"memory_snapshot_{run_name}.pickle",
+            )
+        elif args.profile:
+            run_torch_profile(run_step, f"trace_{run_name}.json")
+        else:
+            mean_ms, std_ms, peak_memory_gib = run_benchmark(run_step, args.measure_steps)
+            print(
+                f"[{args.model_size} | mode: {args.mode} | dtype: {args.dtype} | "
+                f"batch: {args.batch_size} | context: {context_length}] "
+                f"Mean: {mean_ms:.2f} ms | Std: {std_ms:.2f} ms | "
+                f"Peak memory: {peak_memory_gib:.2f} GiB"
+            )
+    finally:
+        del model, optimizer, inputs, targets
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+if __name__ == "__main__":
+    main()
