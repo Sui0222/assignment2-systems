@@ -532,11 +532,13 @@ class CausalMultiHeadSelfAttention(nn.Module):
         causal_mask = causal_mask.__getitem__((None,) * len(batch_dims) + (...,))  # Add appropriate leading dimensions
 
         # Shape: (..., num_heads, sequence_length, d_k)
+        nvtx.range_push("scaled_dot_product_attention")
         attn_output = scaled_dot_product_attention(K=K, Q=Q, V=V, mask=causal_mask)
+        nvtx.range_pop()
 
         # Concatenate the attention output from all heads.
         # (..., sequence_length, num_heads * d_v).
-        nvtx.range_push("scaled_dot_product_attention")
+        nvtx.range_push("concatenate_attention_heads")
         attn_output = rearrange(attn_output, "batch heads seq d_v -> batch seq (heads d_v)").contiguous()
         nvtx.range_pop()
 
