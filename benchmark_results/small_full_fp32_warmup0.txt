@@ -1,0 +1,1 @@
+[small | mode: full | dtype: fp32 | batch: 4 | context: 512] Mean: 256.85 ms | Std: 92.03 ms | Peak memory: 5.03 GiB

@@ -1,0 +1,1 @@
+[xl | mode: fwd | dtype: fp32 | batch: 4 | context: 512] Mean: 1023.04 ms | Std: 1.25 ms | Peak memory: 13.44 GiB

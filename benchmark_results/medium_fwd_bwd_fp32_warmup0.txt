@@ -1,0 +1,1 @@
+[medium | mode: fwd_bwd | dtype: fp32 | batch: 4 | context: 512] Mean: 576.25 ms | Std: 92.16 ms | Peak memory: 10.56 GiB

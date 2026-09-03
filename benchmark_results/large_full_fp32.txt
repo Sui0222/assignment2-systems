@@ -1,0 +1,45 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/ubuntu/assignment2-systems/cs336_systems/benchmark.py", line 224, in <module>
+    main()
+    ~~~~^^
+  File "/home/ubuntu/assignment2-systems/cs336_systems/benchmark.py", line 197, in main
+    run_step()
+    ~~~~~~~~^^
+  File "/home/ubuntu/assignment2-systems/cs336_systems/benchmark.py", line 78, in run_step
+    logits = model(inputs)
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/assignment2-systems/cs336-basics/cs336_basics/model.py", line 253, in forward
+    x = layer(x)
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/assignment2-systems/cs336-basics/cs336_basics/model.py", line 382, in forward
+    x_attn = self.attn(self.ln1(x))
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/assignment2-systems/cs336-basics/cs336_basics/model.py", line 535, in forward
+    attn_output = scaled_dot_product_attention(K=K, Q=Q, V=V, mask=causal_mask)
+  File "/home/ubuntu/assignment2-systems/cs336-basics/cs336_basics/model.py", line 429, in scaled_dot_product_attention
+    attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+                       ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/einops/einops.py", line 939, in einsum
+    return get_backend(tensors[0]).einsum(pattern, *tensors)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/einops/_backends.py", line 291, in einsum
+    return self.torch.einsum(pattern, *x)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/ubuntu/assignment2-systems/.venv/lib/python3.13/site-packages/torch/functional.py", line 373, in einsum
+    return _VF.einsum(equation, operands)  # type: ignore[attr-defined]
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 22.06 GiB of which 29.44 MiB is free. Including non-PyTorch memory, this process has 22.02 GiB memory in use. Of the allocated memory 18.21 GiB is allocated by PyTorch, and 3.51 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)

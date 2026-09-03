@@ -1,0 +1,1 @@
+[small | mode: fwd | dtype: fp32 | batch: 4 | context: 512] Mean: 59.71 ms | Std: 0.50 ms | Peak memory: 0.71 GiB
