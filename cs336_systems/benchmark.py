@@ -102,8 +102,7 @@ def run_memory_profile(
 ) -> None:
     torch.cuda.memory._record_memory_history(max_entries=1_000_000)
     try:
-        for _ in range(2):
-            run_step()
+        run_step()
         torch.cuda.synchronize()
         torch.cuda.memory._dump_snapshot(snapshot_path)
     finally:
